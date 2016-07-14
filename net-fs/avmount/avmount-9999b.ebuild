@@ -7,8 +7,7 @@ EAPI=5
 if [[ ${PV} == 9999* ]]; then
 	inherit eutils autotools git-r3 linux-info
 	EGIT_REPO_URI=(
-		"https://github.com/fernando-rodriguez/avmount.git"
-		"git://github.com/fernando-rodriguez/avmount.git" )
+		"git@github.com:avbox/portage.git" )
 	if [[ ${PV} == 9999 ]]; then
 		EGIT_BRANCH="staging"
 	fi
