@@ -32,6 +32,7 @@ RDEPEND="
 	ipv6? ( net-libs/libupnp[ipv6] )
 	>=net-misc/curl-7.45.0"
 DEPEND="${RDEPEND}
+	sys-devel/autoconf-archive
 	dev-lang/perl"
 
 pkg_pretend()
