@@ -11,7 +11,7 @@ if [[ ${PV} == 9999* ]]; then
 		EGIT_REPO_URI=( "https://bitbucket.com/frodzdev/mediabox.git" )
 		EGIT_BRANCH="staging"
 	fi
-	KEYWORDS="-*"
+	KEYWORDS=""
 else
 	inherit eutils autotools
 	SRC_URI="https://github.com/avbox/${PN}/archive/${PV}.tar.gz -> mediabox-${PV}.tar.gz"
@@ -50,5 +50,5 @@ src_configure()
 	econf \
 		$(use_enable debug) \
 		$(use_enable bluetooth) \
-		$(use_enable realtime)
+		$(use_enable realtime "ionice")
 }
