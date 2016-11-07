@@ -6,12 +6,12 @@ EAPI=5
 
 if [[ ${PV} == 9999* ]]; then
 	inherit eutils autotools git-r3
-	EGIT_REPO_URI=(
-		"https://github.com/avbox/portage.git" )
+	EGIT_REPO_URI=( "https://github.com/avbox/mediabox.git" )
 	if [[ ${PV} == 9999 ]]; then
+		EGIT_REPO_URI=( "https://bitbucket.com/frodzdev/mediabox.git" )
 		EGIT_BRANCH="staging"
 	fi
-	KEYWORDS=""
+	KEYWORDS="-*"
 else
 	inherit eutils autotools
 	SRC_URI="https://github.com/avbox/${PN}/archive/${PV}.tar.gz -> mediabox-${PV}.tar.gz"
@@ -36,7 +36,7 @@ RDEPEND="
 	x11-libs/pango
 	>=net-misc/curl-7.45.0"
 DEPEND="${RDEPEND}
-	dev-lang/perl"
+	sys-devel/autoconf-archive"
 
 src_prepare()
 {
