@@ -34,7 +34,9 @@ RDEPEND="
 	dev-libs/DirectFB
 	x11-libs/cairo
 	x11-libs/pango
-	>=net-misc/curl-7.45.0"
+	>=net-misc/curl-7.45.0
+	bluetooth? ( net-wireless/bluez)"
+
 DEPEND="${RDEPEND}
 	sys-devel/autoconf-archive"
 
