@@ -1,0 +1,55 @@
+diff --git a/include/libtorrent/alert_types.hpp b/include/libtorrent/alert_types.hpp
+index b4bc434..e9bdd28 100644
+--- a/include/libtorrent/alert_types.hpp
++++ b/include/libtorrent/alert_types.hpp
+@@ -2507,12 +2507,30 @@ namespace libtorrent
+ #endif // TORRENT_DISABLE_LOGGING
+ 	};
+ 
++	// This alert is generated when a block request receives a response.
++	struct TORRENT_EXPORT block_written_alert TORRENT_FINAL : peer_alert
++	{
++		// internal
++		block_written_alert(aux::stack_allocator& alloc, torrent_handle h
++			, tcp::endpoint const& ep, peer_id const& peer_id, int block_num
++			, int piece_num);
++
++		TORRENT_DEFINE_ALERT(block_written_alert, 90)
++
++		static const int static_category = alert::progress_notification;
++		virtual std::string message() const TORRENT_OVERRIDE;
++
++		int block_index;
++		int piece_index;
++	};
++
++
+ #undef TORRENT_DEFINE_ALERT_IMPL
+ #undef TORRENT_DEFINE_ALERT
+ #undef TORRENT_DEFINE_ALERT_PRIO
+ #undef TORRENT_CLONE
+ 
+-	enum { num_alert_types = 90 }; // this enum represents "max_alert_index" + 1
++	enum { num_alert_types = 91 }; // this enum represents "max_alert_index" + 1
+ }
+ 
+ 
+diff --git a/src/torrent.cpp b/src/torrent.cpp
+index 2319557..766d8b1 100644
+--- a/src/torrent.cpp
++++ b/src/torrent.cpp
+@@ -1489,6 +1489,14 @@ namespace libtorrent
+ 
+ 		picker().mark_as_finished(block_finished, 0);
+ 		maybe_done_flushing();
++
++		if (alerts().should_post<block_written_alert>())
++		{
++			alerts().emplace_alert<block_finished_alert>(get_handle(),
++				tcp::endpoint(), peer_id(), block_finished.block_index
++				, block_finished.piece_index);
++		}
++
+ 	}
+ 
+ 	void torrent::on_disk_cache_complete(disk_io_job const* j)
