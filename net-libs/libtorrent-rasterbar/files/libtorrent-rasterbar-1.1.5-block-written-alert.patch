@@ -77,10 +77,10 @@ index e7b7a25..8bcf5a3 100644
  		, tcp::endpoint const& ep
  		, peer_id const& peer_id, int block_num, int piece_num)
 diff --git a/src/peer_connection.cpp b/src/peer_connection.cpp
-index 630676d..27e85ee 100644
+index 630676d..b0ea2db 100644
 --- a/src/peer_connection.cpp
 +++ b/src/peer_connection.cpp
-@@ -3055,6 +3055,30 @@ namespace libtorrent
+@@ -3055,6 +3055,15 @@ namespace libtorrent
  //			, peer_info_struct(), block_finished.piece_index, block_finished.block_index);
  		picker.mark_as_finished(block_finished, peer_info_struct());
  
@@ -88,34 +88,19 @@ index 630676d..27e85ee 100644
 +		{
 +			if (picker.is_piece_ready(block_finished.piece_index))
 +			{
-+				//fprintf(stderr, "on_disk_write_finished(): Sending piece_ready_alert for piece %d\n",
-+				//	block_finished.piece_index);
 +				t->alerts().emplace_alert<piece_ready_alert>(t->get_handle(),
 +					int(block_finished.piece_index));
 +			}
-+			//else
-+			//{
-+			//	if (picker.is_piece_finished(block_finished.piece_index))
-+			//	{
-+			//		fprintf(stderr, "on_disk_write_finished() piece %d finished but not ready!\n",
-+			//			block_finished.piece_index);
-+			//	}
-+			//	else
-+			//	{
-+			//		fprintf(stderr, "on_disk_write_finished() piece %d (block=%d) not finished\n",
-+			//			block_finished.piece_index, block_finished.block_index);
-+			//	}
-+			//}
 +		}
 +
  		t->maybe_done_flushing();
  
  		if (t->alerts().should_post<block_finished_alert>())
 diff --git a/src/piece_picker.cpp b/src/piece_picker.cpp
-index ac75969..bb38de7 100644
+index ac75969..c1b67a9 100644
 --- a/src/piece_picker.cpp
 +++ b/src/piece_picker.cpp
-@@ -2908,6 +2908,30 @@ get_out:
+@@ -2908,6 +2908,26 @@ get_out:
  		return true;
  	}
  
@@ -133,11 +118,7 @@ index ac75969..bb38de7 100644
 +				find_dl_piece(state, index);
 +			TORRENT_ASSERT(i != m_downloads[state].end());
 +			if (int(i->finished) < blocks_in_piece(index))
-+			{
-+				//fprintf(stderr, "Piece %d has only %d finished blocks, %d writing, %d total\n",
-+				//	index, int(i->finished), int(i->writing), blocks_in_piece(index));
 +				return false;
-+			}
 +		}
 +
 +		return true;
@@ -147,7 +128,7 @@ index ac75969..bb38de7 100644
  	{
  		TORRENT_ASSERT(index < int(m_piece_map.size()));
 diff --git a/src/torrent.cpp b/src/torrent.cpp
-index 2319557..dc92d65 100644
+index 2319557..ad62964 100644
 --- a/src/torrent.cpp
 +++ b/src/torrent.cpp
 @@ -1488,6 +1488,16 @@ namespace libtorrent
@@ -167,48 +148,18 @@ index 2319557..dc92d65 100644
  		maybe_done_flushing();
  	}
  
-@@ -2781,6 +2791,8 @@ namespace {
- 
- 		dec_refcount("start_checking");
- 
-+		fprintf(stderr, "torrent::on_piece_hashed piece:%d\n", j->piece);
-+
- 		if (m_abort) return;
- 
- 		if (j->ret == piece_manager::disk_check_aborted)
-@@ -4369,7 +4381,26 @@ namespace {
- 		state_updated();
- 
+@@ -4371,6 +4381,14 @@ namespace {
  		if (m_ses.alerts().should_post<piece_finished_alert>())
-+		{
-+			fprintf(stderr, "we_have(): Sending piece_finished_alert for piece %d\n",
-+				index);
  			m_ses.alerts().emplace_alert<piece_finished_alert>(get_handle(), index);
-+		}
-+
+ 
 +		if (alerts().should_post<piece_ready_alert>())
 +		{
 +			if (has_picker() && picker().is_piece_ready(index))
 +			{
-+				//fprintf(stderr, "we_have(): Sending piece_ready_alert for piece %d\n",
-+				//	index);
 +				alerts().emplace_alert<piece_ready_alert>(get_handle(), index);
 +			}
-+			//else
-+			//{
-+			//	fprintf(stderr, "we_have(): Piece %d finished but not ready has_picker=%d\n",
-+			//		index, has_picker());
-+			//}
 +		}
- 
++
  		// update m_file_progress (if we have one)
  		m_file_progress.update(m_torrent_file->files(), index
-@@ -4411,7 +4442,7 @@ namespace {
- 		debug_log("PIECE_PASSED (%d)", num_passed());
- #endif
- 
--//		fprintf(stderr, "torrent::piece_passed piece:%d\n", index);
-+		fprintf(stderr, "torrent::piece_passed piece:%d\n", index);
- 
- 		TORRENT_ASSERT(index >= 0);
- 		TORRENT_ASSERT(index < m_torrent_file->num_pieces());
+ 			, &m_ses.alerts(), get_handle());
