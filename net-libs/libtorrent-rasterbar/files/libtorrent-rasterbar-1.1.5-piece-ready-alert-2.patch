@@ -1,185 +1,42 @@
-diff --git a/include/libtorrent/alert.hpp b/include/libtorrent/alert.hpp
-index 3bd389b4b..d609b57c3 100644
---- a/include/libtorrent/alert.hpp
-+++ b/include/libtorrent/alert.hpp
-@@ -190,6 +190,9 @@ namespace libtorrent {
- 			// enables verbose logging from the piece picker.
- 			picker_log_notification       = 0x100000,
+diff --git a/include/libtorrent/alert_manager.hpp b/include/libtorrent/alert_manager.hpp
+index 017240264..3800941b3 100644
+--- a/include/libtorrent/alert_manager.hpp
++++ b/include/libtorrent/alert_manager.hpp
+@@ -94,7 +94,12 @@ namespace libtorrent {
+ 			// for high priority alerts, double the upper limit
+ 			if (m_alerts[m_generation].size() >= m_queue_size_limit
+ 				* (1 + T::priority))
++			{
++				aux::stack_allocator alloc;
++				T alert(alloc, std::forward<Args>(args)...);
++				maybe_notify(&alert, lock);
+ 				return;
++			}
  
-+			// alerts when pieces are verified and written to disk
-+			piece_progress_notification   = 0x200000,
-+
- 			// The full bitmask, representing all available categories.
- 			//
- 			// since the enum is signed, make sure this isn't
+ 			T alert(m_allocations[m_generation], std::forward<Args>(args)...);
+ 			m_alerts[m_generation].push_back(alert);
+@@ -116,12 +121,6 @@ namespace libtorrent {
+ 		template <class T>
+ 		bool should_post() const
+ 		{
+-			mutex::scoped_lock lock(m_mutex);
+-			if (m_alerts[m_generation].size() >= m_queue_size_limit
+-				* (1 + T::priority))
+-			{
+-				return false;
+-			}
+ 			return (m_alert_mask & T::static_category) != 0;
+ 		}
+ 
 diff --git a/include/libtorrent/alert_types.hpp b/include/libtorrent/alert_types.hpp
-index b4bc43410..77e06759a 100644
+index b4bc43410..4657f2431 100644
 --- a/include/libtorrent/alert_types.hpp
 +++ b/include/libtorrent/alert_types.hpp
-@@ -2507,12 +2507,30 @@ namespace libtorrent
- #endif // TORRENT_DISABLE_LOGGING
- 	};
+@@ -907,6 +907,7 @@ namespace libtorrent
  
-+	// This alert is generated when a piece has passed the hash check and has
-+	// been written to disk (so it can be safely read). This alert may be generated
-+	// more than once for each piece.
-+	struct TORRENT_EXPORT piece_ready_alert TORRENT_FINAL : torrent_alert
-+	{
-+		// internal
-+		piece_ready_alert(aux::stack_allocator& alloc, torrent_handle h
-+			, int piece_num);
-+
-+		TORRENT_DEFINE_ALERT_PRIO(piece_ready_alert, 90)
-+
-+		static const int static_category = alert::piece_progress_notification;
-+		virtual std::string message() const TORRENT_OVERRIDE;
-+
-+		int piece_index;
-+	};
-+
-+
- #undef TORRENT_DEFINE_ALERT_IMPL
- #undef TORRENT_DEFINE_ALERT
- #undef TORRENT_DEFINE_ALERT_PRIO
- #undef TORRENT_CLONE
+ 		TORRENT_DEFINE_ALERT(unwanted_block_alert, 32)
  
--	enum { num_alert_types = 90 }; // this enum represents "max_alert_index" + 1
-+	enum { num_alert_types = 91 }; // this enum represents "max_alert_index" + 1
- }
++		static const int static_category = alert::progress_notification;
+ 		virtual std::string message() const TORRENT_OVERRIDE;
  
- 
-diff --git a/include/libtorrent/piece_picker.hpp b/include/libtorrent/piece_picker.hpp
-index 562e833aa..f8102c1d1 100644
---- a/include/libtorrent/piece_picker.hpp
-+++ b/include/libtorrent/piece_picker.hpp
-@@ -385,6 +385,10 @@ namespace libtorrent
- 		// or if we have the piece
- 		bool is_piece_finished(int index) const;
- 
-+		// returns true if the piece has passed the hash check
-+		// and have been written to disk
-+		bool is_piece_ready(int index) const;
-+
- 		// returns true if we have the piece or if the piece
- 		// has passed the hash check
- 		bool has_piece_passed(int index) const;
-diff --git a/src/alert.cpp b/src/alert.cpp
-index e7b7a2521..8bcf5a3f8 100644
---- a/src/alert.cpp
-+++ b/src/alert.cpp
-@@ -593,6 +593,22 @@ namespace libtorrent {
- 		return ret;
- 	}
- 
-+	piece_ready_alert::piece_ready_alert(aux::stack_allocator& alloc, torrent_handle h
-+		, int piece_num)
-+		: torrent_alert(alloc, h)
-+		, piece_index(piece_num)
-+	{
-+		TORRENT_ASSERT(piece_index >= 0);
-+	}
-+
-+	std::string piece_ready_alert::message() const
-+	{
-+		char ret[200];
-+		snprintf(ret, sizeof(ret), "%s piece %i is ready"
-+			, torrent_alert::message().c_str(), piece_index);
-+		return ret;
-+	}
-+
- 	block_downloading_alert::block_downloading_alert(aux::stack_allocator& alloc, torrent_handle h
- 		, tcp::endpoint const& ep
- 		, peer_id const& peer_id, int block_num, int piece_num)
-diff --git a/src/peer_connection.cpp b/src/peer_connection.cpp
-index 0f3495475..a8ea0e2bd 100644
---- a/src/peer_connection.cpp
-+++ b/src/peer_connection.cpp
-@@ -3064,6 +3064,15 @@ namespace libtorrent
- //			, peer_info_struct(), block_finished.piece_index, block_finished.block_index);
- 		picker.mark_as_finished(block_finished, peer_info_struct());
- 
-+		if (t->alerts().should_post<piece_ready_alert>())
-+		{
-+			if (picker.is_piece_ready(block_finished.piece_index))
-+			{
-+				t->alerts().emplace_alert<piece_ready_alert>(t->get_handle(),
-+					int(block_finished.piece_index));
-+			}
-+		}
-+
- 		t->maybe_done_flushing();
- 
- 		if (t->alerts().should_post<block_finished_alert>())
-diff --git a/src/piece_picker.cpp b/src/piece_picker.cpp
-index d88ebf76b..aaf38b76d 100644
---- a/src/piece_picker.cpp
-+++ b/src/piece_picker.cpp
-@@ -2921,6 +2921,32 @@ get_out:
- 		return true;
- 	}
- 
-+	bool piece_picker::is_piece_ready(int index) const
-+	{
-+		TORRENT_ASSERT(index < int(m_piece_map.size()));
-+		TORRENT_ASSERT(index >= 0);
-+
-+		piece_pos const& p = m_piece_map[index];
-+		int state = p.download_queue();
-+
-+		if (p.index != piece_pos::we_have_index && state == piece_pos::piece_open)
-+		{
-+			for (int i = 0; i < piece_pos::num_download_categories; ++i)
-+				TORRENT_ASSERT(find_dl_piece(i, index) == m_downloads[i].end());
-+			return false;
-+		}
-+		else if (state < piece_pos::num_download_categories)
-+		{
-+			std::vector<downloading_piece>::const_iterator i =
-+				find_dl_piece(state, index);
-+			TORRENT_ASSERT(i != m_downloads[state].end());
-+			if (!i->passed_hash_check || int(i->finished) < blocks_in_piece(index))
-+				return false;
-+		}
-+
-+		return true;
-+	}
-+
- 	bool piece_picker::has_piece_passed(int index) const
- 	{
- 		TORRENT_ASSERT(index < int(m_piece_map.size()));
-diff --git a/src/torrent.cpp b/src/torrent.cpp
-index d3fc722e5..1d9a62949 100644
---- a/src/torrent.cpp
-+++ b/src/torrent.cpp
-@@ -1523,6 +1523,16 @@ namespace libtorrent
- 		if (picker().is_finished(block_finished)) return;
- 
- 		picker().mark_as_finished(block_finished, 0);
-+
-+		if (alerts().should_post<piece_ready_alert>())
-+		{
-+			if (picker().is_piece_ready(block_finished.piece_index))
-+			{
-+				alerts().emplace_alert<piece_ready_alert>(get_handle(),
-+					block_finished.piece_index);
-+			}
-+		}
-+
- 		maybe_done_flushing();
- 	}
- 
-@@ -4382,6 +4392,14 @@ namespace {
- 		if (m_ses.alerts().should_post<piece_finished_alert>())
- 			m_ses.alerts().emplace_alert<piece_finished_alert>(get_handle(), index);
- 
-+		if (alerts().should_post<piece_ready_alert>())
-+		{
-+			if (has_picker() && picker().is_piece_ready(index))
-+			{
-+				alerts().emplace_alert<piece_ready_alert>(get_handle(), index);
-+			}
-+		}
-+
- 		// update m_file_progress (if we have one)
- 		m_file_progress.update(m_torrent_file->files(), index
- 			, &m_ses.alerts(), get_handle());
+ 		int block_index;
