@@ -43,7 +43,7 @@ DEPEND="${RDEPEND}
 src_prepare() {
 	default
 
-	eapply "${FILESDIR}/${PN}-1.1.5-piece-ready-alert-2.patch"
+	eapply "${FILESDIR}/${PN}-1.1.5-delay-hash-failed-alert.patch"
 
 	# bug 578026
 	# prepend -L${S}/... to ensure bindings link against the lib we just built
