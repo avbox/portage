@@ -1,0 +1,283 @@
+commit 920e9f15d7b2e021bc33897f4f788602ab0d9a54
+Author: Fernando Rodriguez <frodzdev@gmail.com>
+Date:   Wed Apr 4 17:46:53 2018 -0400
+
+    Make extension alerts reliable
+    
+    Add feature to make alerts sent to session extensions reliable (ie. the
+    alerts will be delivered even if the queue is full).
+    
+    Also remove unnecessary mutex locks.
+
+diff --git a/include/libtorrent/alert_manager.hpp b/include/libtorrent/alert_manager.hpp
+index 017240264..c0526af06 100644
+--- a/include/libtorrent/alert_manager.hpp
++++ b/include/libtorrent/alert_manager.hpp
+@@ -52,6 +52,11 @@ POSSIBILITY OF SUCH DAMAGE.
+ 
+ #include "libtorrent/aux_/disable_warnings_pop.hpp"
+ 
++#ifndef TORRENT_DISABLE_EXTENSIONS
++#include "libtorrent/extensions.hpp"
++#endif
++
++
+ #ifdef __GNUC__
+ // this is to suppress the warnings for using std::auto_ptr
+ #pragma GCC diagnostic push
+@@ -94,7 +99,36 @@ namespace libtorrent {
+ 			// for high priority alerts, double the upper limit
+ 			if (m_alerts[m_generation].size() >= m_queue_size_limit
+ 				* (1 + T::priority))
++			{
++#ifndef TORRENT_DISABLE_EXTENSIONS
++				if (m_reliable_ext_alerts) {
++					// after we have a reference to the current allocator it
++					// is safe to unlock the mutex because m_allocations is protected
++					// by the fact that the client needs to pop alerts *twice* before
++					// it can free it and that's impossible until we emplace
++					// more alerts.
++					aux::stack_allocator& alloc = m_allocations[m_generation];
++					lock.unlock();
++
++					// save the state of the active allocator so that
++					// we can restore it when we're done
++					aux::stack_allocator_state_t state = alloc.save_state();
++					T alert(alloc, std::forward<Args>(args)...);
++
++					for (ses_extension_list_t::iterator i = m_ses_extensions.begin()
++						, end(m_ses_extensions.end()); i != end; ++i)
++					{
++						if ((*i)->implemented_features() & plugin::reliable_alerts_feature)
++						{
++							(*i)->on_alert(&alert);
++						}
++					}
++
++					alloc.restore_state(state);
++				}
++#endif
+ 				return;
++			}
+ 
+ 			T alert(m_allocations[m_generation], std::forward<Args>(args)...);
+ 			m_alerts[m_generation].push_back(alert);
+@@ -116,12 +150,6 @@ namespace libtorrent {
+ 		template <class T>
+ 		bool should_post() const
+ 		{
+-			mutex::scoped_lock lock(m_mutex);
+-			if (m_alerts[m_generation].size() >= m_queue_size_limit
+-				* (1 + T::priority))
+-			{
+-				return false;
+-			}
+ 			return (m_alert_mask & T::static_category) != 0;
+ 		}
+ 
+@@ -129,13 +157,11 @@ namespace libtorrent {
+ 
+ 		void set_alert_mask(boost::uint32_t m)
+ 		{
+-			mutex::scoped_lock lock(m_mutex);
+ 			m_alert_mask = m;
+ 		}
+ 
+ 		boost::uint32_t alert_mask() const
+ 		{
+-			mutex::scoped_lock lock(m_mutex);
+ 			return m_alert_mask;
+ 		}
+ 
+@@ -203,6 +229,7 @@ namespace libtorrent {
+ #ifndef TORRENT_DISABLE_EXTENSIONS
+ 		typedef std::list<boost::shared_ptr<plugin> > ses_extension_list_t;
+ 		ses_extension_list_t m_ses_extensions;
++		bool m_reliable_ext_alerts;
+ #endif
+ 	};
+ }
+diff --git a/include/libtorrent/extensions.hpp b/include/libtorrent/extensions.hpp
+index 26accca57..e6adfeabc 100644
+--- a/include/libtorrent/extensions.hpp
++++ b/include/libtorrent/extensions.hpp
+@@ -218,7 +218,11 @@ namespace libtorrent
+ 			optimistic_unchoke_feature = 1,
+ 
+ 			// include this bit if your plugin needs to have on_tick() called
+-			tick_feature = 2
++			tick_feature = 2,
++
++			// include this bit if your plugin needs to have on_alert() called
++			// for all unmasked alerts, even after the queue is full.
++			reliable_alerts_feature = 4
+ 		};
+ 
+ 		// This function is expected to return a bitmask indicating which features
+diff --git a/include/libtorrent/stack_allocator.hpp b/include/libtorrent/stack_allocator.hpp
+index 2fdd4c4f3..751faec70 100644
+--- a/include/libtorrent/stack_allocator.hpp
++++ b/include/libtorrent/stack_allocator.hpp
+@@ -38,6 +38,8 @@ POSSIBILITY OF SUCH DAMAGE.
+ namespace libtorrent { namespace aux
+ {
+ 
++	typedef boost::uint32_t stack_allocator_state_t;
++
+ 	struct stack_allocator
+ 	{
+ 		stack_allocator() {}
+@@ -100,6 +102,17 @@ namespace libtorrent { namespace aux
+ 			m_storage.clear();
+ 		}
+ 
++		void restore_state(stack_allocator_state_t state)
++		{
++			TORRENT_ASSERT(state <= m_storage.size());
++			m_storage.resize(state);
++		}
++
++		stack_allocator_state_t save_state()
++		{
++			return m_storage.size();
++		}
++
+ 	private:
+ 
+ 		// non-copyable
+diff --git a/src/alert_manager.cpp b/src/alert_manager.cpp
+index ddb661986..4f091c9d2 100644
+--- a/src/alert_manager.cpp
++++ b/src/alert_manager.cpp
+@@ -46,13 +46,13 @@ namespace libtorrent
+ 		, m_queue_size_limit(queue_limit)
+ 		, m_num_queued_resume(0)
+ 		, m_generation(0)
++		, m_reliable_ext_alerts(false)
+ 	{}
+ 
+ 	alert_manager::~alert_manager() {}
+ 
+ 	int alert_manager::num_queued_resume() const
+ 	{
+-		mutex::scoped_lock lock(m_mutex);
+ 		return m_num_queued_resume;
+ 	}
+ 
+@@ -164,6 +164,8 @@ namespace libtorrent
+ #ifndef TORRENT_DISABLE_EXTENSIONS
+ 	void alert_manager::add_extension(boost::shared_ptr<plugin> ext)
+ 	{
++		if (ext->implemented_features() & lt::plugin::reliable_alerts_feature)
++			m_reliable_ext_alerts = true;
+ 		m_ses_extensions.push_back(ext);
+ 	}
+ #endif
+@@ -189,7 +191,6 @@ namespace libtorrent
+ 
+ 	bool alert_manager::pending() const
+ 	{
+-		mutex::scoped_lock lock(m_mutex);
+ 		return !m_alerts[m_generation].empty();
+ 	}
+ 
+diff --git a/test/test_alert_manager.cpp b/test/test_alert_manager.cpp
+index 32a6532a5..701f5488b 100644
+--- a/test/test_alert_manager.cpp
++++ b/test/test_alert_manager.cpp
+@@ -190,14 +190,40 @@ int plugin_alerts[3] = { 0, 0, 0 };
+ 
+ struct test_plugin : libtorrent::plugin
+ {
+-	test_plugin(int index) : m_index(index) {}
++	test_plugin(int index, bool reliable_alerts) : m_index(index),
++		m_features(reliable_alerts ? libtorrent::plugin::reliable_alerts_feature : 0) {}
++	virtual boost::uint32_t implemented_features() { return m_features; }
+ 	virtual void on_alert(alert const* a)
+ 	{
+ 		++plugin_alerts[m_index];
+ 	}
+ 	int m_index;
++	boost::uint32_t m_features;
+ };
+ 
++void
++alert_popper(alert_manager& mgr, bool& running)
++{
++	std::vector<alert*> alerts;
++	int num_resume = 0, n_iters = 0;
++
++	running = true;
++
++	while (running)
++	{
++		/* wait for the next alert */
++		time_duration td = seconds(1);
++		if (mgr.wait_for_alert(td) == nullptr)
++			continue;
++
++		mgr.get_all(alerts, num_resume);
++
++		/* sleep every few iterations to simulate overrun */
++		if (++n_iters % 10 == 0)
++			test_sleep(500);
++	}
++}
++
+ #endif
+ 
+ TORRENT_TEST(extensions)
+@@ -206,9 +232,9 @@ TORRENT_TEST(extensions)
+ 	memset(plugin_alerts, 0, sizeof(plugin_alerts));
+ 	alert_manager mgr(100, 0xffffffff);
+ 
+-	mgr.add_extension(boost::make_shared<test_plugin>(0));
+-	mgr.add_extension(boost::make_shared<test_plugin>(1));
+-	mgr.add_extension(boost::make_shared<test_plugin>(2));
++	mgr.add_extension(boost::make_shared<test_plugin>(0, false));
++	mgr.add_extension(boost::make_shared<test_plugin>(1, false));
++	mgr.add_extension(boost::make_shared<test_plugin>(2, true));
+ 
+ 	for (int i = 0; i < 53; ++i)
+ 		mgr.emplace_alert<add_torrent_alert>(torrent_handle(), add_torrent_params(), error_code());
+@@ -223,6 +249,40 @@ TORRENT_TEST(extensions)
+ 	TEST_EQUAL(plugin_alerts[0], 70);
+ 	TEST_EQUAL(plugin_alerts[1], 70);
+ 	TEST_EQUAL(plugin_alerts[2], 70);
++
++	for (int i = 0; i < 35; ++i)
++		mgr.emplace_alert<add_torrent_alert>(torrent_handle(), add_torrent_params(), error_code());
++
++	TEST_EQUAL(plugin_alerts[0], 100);
++	TEST_EQUAL(plugin_alerts[1], 100);
++	TEST_EQUAL(plugin_alerts[2], 105);
++
++	mgr.set_alert_queue_size_limit(0);
++
++	for (int i = 0; i < 35; ++i)
++		mgr.emplace_alert<add_torrent_alert>(torrent_handle(), add_torrent_params(), error_code());
++
++	TEST_EQUAL(plugin_alerts[0], 100);
++	TEST_EQUAL(plugin_alerts[1], 100);
++	TEST_EQUAL(plugin_alerts[2], 140);
++
++	bool running = false;
++	int num_resume = 0;
++	std::vector<alert*> alerts;
++	mgr.get_all(alerts, num_resume);
++	libtorrent::thread t(boost::bind(&alert_popper, boost::ref(mgr), boost::ref(running)));
++
++	/* make sure the thread is started */
++	while (!running) test_sleep(10);
++
++	for (int i = 0; i < 1000000; ++i)
++		mgr.emplace_alert<add_torrent_alert>(torrent_handle(), add_torrent_params(), error_code());
++
++	running = true;
++	t.join();
++
++	TEST_EQUAL(plugin_alerts[2], 1000105);
++
+ #endif
+ }
+ 
