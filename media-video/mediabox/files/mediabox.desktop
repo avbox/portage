@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=MediaBox
+Comment=A Media Player
+Exec=/etc/X11/Sessions/mediabox
+Icon=xterm
+Type=Application
